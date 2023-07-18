@@ -477,7 +477,14 @@ impl DirContents {
             .filter_map(|(_, entry)| entry.ok())
             .for_each(|entry| {
                 let path = PathBuf::from(entry.path().strip_prefix(base).unwrap());
-                if entry.path().is_dir() {
+
+                // Avoid using path.is_dir, as that follows the symlink,
+                // potentially into a slow/inaccessible filesystem.
+                let is_dir = fs::symlink_metadata(entry.path())
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false);
+
+                if is_dir {
                     folders.insert(path);
                 } else {
                     if !path.to_string_lossy().starts_with('.') {
