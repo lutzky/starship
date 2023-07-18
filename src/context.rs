@@ -334,7 +334,11 @@ impl<'a> Context<'a> {
     pub fn dir_contents(&self) -> Result<&DirContents, std::io::Error> {
         self.dir_contents.get_or_try_init(|| {
             let timeout = self.root_config.scan_timeout;
-            DirContents::from_path_with_timeout(&self.current_dir, Duration::from_millis(timeout))
+            DirContents::from_path_with_timeout(
+                &self.current_dir,
+                Duration::from_millis(timeout),
+                self.root_config.follow_symlinks,
+            )
         })
     }
 
@@ -456,10 +460,14 @@ pub struct DirContents {
 impl DirContents {
     #[cfg(test)]
     fn from_path(base: &Path) -> Result<Self, std::io::Error> {
-        Self::from_path_with_timeout(base, Duration::from_secs(30))
+        Self::from_path_with_timeout(base, Duration::from_secs(30), true)
     }
 
-    fn from_path_with_timeout(base: &Path, timeout: Duration) -> Result<Self, std::io::Error> {
+    fn from_path_with_timeout(
+        base: &Path,
+        timeout: Duration,
+        follow_symlinks: bool,
+    ) -> Result<Self, std::io::Error> {
         let start = Instant::now();
 
         let mut folders: HashSet<PathBuf> = HashSet::new();
@@ -477,7 +485,15 @@ impl DirContents {
             .filter_map(|(_, entry)| entry.ok())
             .for_each(|entry| {
                 let path = PathBuf::from(entry.path().strip_prefix(base).unwrap());
-                if entry.path().is_dir() {
+
+                let is_dir = match follow_symlinks {
+                    true => entry.path().is_dir(),
+                    false => fs::symlink_metadata(entry.path())
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false),
+                };
+
+                if is_dir {
                     folders.insert(path);
                 } else {
                     if !path.to_string_lossy().starts_with('.') {
