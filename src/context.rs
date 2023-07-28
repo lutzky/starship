@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::string::String;
 use std::time::{Duration, Instant};
+use systemstat::Platform;
 use terminal_size::terminal_size;
 
 /// Context contains data or common methods that may be used by multiple modules.
@@ -478,13 +479,7 @@ impl DirContents {
             .for_each(|entry| {
                 let path = PathBuf::from(entry.path().strip_prefix(base).unwrap());
 
-                // Avoid using path.is_dir, as that follows the symlink,
-                // potentially into a slow/inaccessible filesystem.
-                let is_dir = fs::symlink_metadata(entry.path())
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false);
-
-                if is_dir {
+                if is_dir_or_symlink_to_local_dir(entry).unwrap_or(false) {
                     folders.insert(path);
                 } else {
                     if !path.to_string_lossy().starts_with('.') {
@@ -770,6 +765,90 @@ fn get_remote_repository_info(
         .map(|n| n.as_bstr().to_string());
 
     Some(Remote { branch, name })
+}
+
+fn is_dir_or_symlink_to_local_dir(entry: fs::DirEntry) -> Result<bool, std::io::Error> {
+    // Avoid using entry.path.is_dir, as that follows the symlink,
+    // potentially into a slow/inaccessible filesystem.
+
+    let Ok(metadata) = entry.metadata() else {
+        return Ok(false);
+    };
+
+    if !metadata.is_symlink() {
+        return Ok(metadata.is_dir());
+    }
+
+    // Can't use fs::canoncalize, as it follows multiple layers of symbolic
+    // links; we're fine with reading the first layer (as it's an entry in a
+    // directory we must read anyway), but later layers might be on
+    // slow/inaccessible filesystems.
+
+    let target = fs::read_link(entry.path())?;
+
+    log::info!(
+        "before absolutizing, source is {:?}, target is {:?}",
+        entry.path(),
+        target
+    );
+
+    let source = std::path::absolute(entry.path())?;
+    let target = std::path::absolute(target)?;
+
+    // TODO(lutzky): Note, std::path::absolute is problematic:
+    //
+    // 1. It does not elide '..' - if CWD is /a, and entry.path() is ../b, it returns /a/../b
+    // 2. It's experimental
+    //
+    // What we actually want is path-absolutize, but that's a new dependency.
+
+    if !paths_on_same_fs(&source, &target) {
+        return Ok(false);
+    }
+
+    // target is now known to be on the same fs we read from, so is_dir should
+    // return quickly.
+    Ok(target.is_dir())
+}
+
+fn paths_on_same_fs(a: &PathBuf, b: &PathBuf) -> bool {
+    log::info!("Checking whether {a:?} and {b:?} look like they're on the same FS");
+
+    // TODO(lutzky): System::new probably called elsewhere
+
+    let sys = <systemstat::System as systemstat::Platform>::new();
+
+    let mounts = sys.mounts().unwrap();
+
+    fn longest_prefix(path:&Path, mounts: &[systemstat::Filesystem]) -> Option<String> {
+        mounts
+            .iter()
+            .filter_map(|fs| match path.starts_with(&fs.fs_mounted_on) {
+                true => Some(&fs.fs_mounted_on),
+                false => None,
+            })
+            .max_by_key(|mountpoint| mountpoint.len())
+            .cloned()
+    }
+
+    let longest_prefix_a = longest_prefix(a, &mounts);
+    let longest_prefix_b = longest_prefix(b, &mounts);
+
+    match (&longest_prefix_a, &longest_prefix_b) {
+        (Some(lpa), Some(lpb)) => {
+            log::info!("filesystems appear to be {lpa:?}, {lpb:?}");
+            lpa == lpb
+        }
+        _ => {
+            log::warn!(
+                "Could not check whether {a:?}, {b:?} are on the same filesystem; \
+            best guess is {:?}, {:?}.",
+                &longest_prefix_a,
+                &longest_prefix_b
+            );
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
