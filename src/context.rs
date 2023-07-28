@@ -792,17 +792,13 @@ fn is_dir_or_symlink_to_local_dir(entry: fs::DirEntry) -> Result<bool, std::io::
         target
     );
 
-    let source = std::path::absolute(entry.path())?;
-    let target = std::path::absolute(target)?;
+    use path_absolutize::*;
 
-    // TODO(lutzky): Note, std::path::absolute is problematic:
-    //
-    // 1. It does not elide '..' - if CWD is /a, and entry.path() is ../b, it returns /a/../b
-    // 2. It's experimental
-    //
-    // What we actually want is path-absolutize, but that's a new dependency.
+    let source_rel = entry.path();
+    let source = source_rel.absolutize()?;
+    let target = target.absolutize()?;
 
-    if !paths_on_same_fs(&source, &target) {
+    if !paths_on_same_fs(source.as_ref(), target.as_ref()) {
         return Ok(false);
     }
 
@@ -811,7 +807,7 @@ fn is_dir_or_symlink_to_local_dir(entry: fs::DirEntry) -> Result<bool, std::io::
     Ok(target.is_dir())
 }
 
-fn paths_on_same_fs(a: &PathBuf, b: &PathBuf) -> bool {
+fn paths_on_same_fs(a: &Path, b: &Path) -> bool {
     log::info!("Checking whether {a:?} and {b:?} look like they're on the same FS");
 
     // TODO(lutzky): System::new probably called elsewhere
