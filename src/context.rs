@@ -816,7 +816,7 @@ fn paths_on_same_fs(a: &Path, b: &Path) -> bool {
 
     let mounts = sys.mounts().unwrap();
 
-    fn longest_prefix<'a>(path:&Path, mounts: &'a[systemstat::Filesystem]) -> Option<&'a String> {
+    fn longest_prefix<'a>(path: &Path, mounts: &'a [systemstat::Filesystem]) -> Option<&'a String> {
         mounts
             .iter()
             .filter_map(|fs| match path.starts_with(&fs.fs_mounted_on) {
